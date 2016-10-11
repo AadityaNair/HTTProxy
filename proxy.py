@@ -5,7 +5,7 @@
     A simple HTTP proxy with support for caching
 '''
 
-# import logging, multiprocessing
+import multiprocessing
 import socket
 
 PROXY_PORT = 1235
@@ -29,12 +29,15 @@ class TCPClient(object):
     def connect(self, host, port=80, data="GET / HTTP/1.0\r\n\r\n"):
         self.soc.connect((host, port))
         self.soc.send(data.encode('ascii'))
-        buffer = ''
+        buffer = b''
+
+        self.soc.settimeout(3)
         while True:
-            data = self.soc.recv(DATA_SIZE)
-            buffer += data.decode('ascii')
-            if len(data) < DATA_SIZE:
+            try:
+                data = self.soc.recv(DATA_SIZE)
+            except socket.timeout:
                 break
+            buffer += data
 
         return buffer
 
@@ -66,7 +69,7 @@ class HTTPServer(object):
 
         proxy_request = buffer.replace(url[:res_start], '')
         response_from_server = TCPClient().connect(host, 80, proxy_request)
-        conn.send(response_from_server.encode('ascii'))
+        conn.send(response_from_server)
 
     def serve(self):
         """
@@ -82,13 +85,15 @@ class HTTPServer(object):
 
         while True:
             conn, addr = soc.accept()
-
+            conn.settimeout(0.1)
             buffer = ''
+
             while True:
-                data = conn.recv(DATA_SIZE)
-                buffer += data.decode('ascii')
-                if len(data) < DATA_SIZE:
+                try:
+                    data = conn.recv(DATA_SIZE)
+                except socket.timeout:
                     break
+                buffer += data.decode('ascii')
 
             self.handle(buffer, conn, addr)
             conn.close()
