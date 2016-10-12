@@ -5,13 +5,14 @@
     A simple HTTP proxy with support for caching
 '''
 
-import multiprocessing
+import multiprocessing as mp
 import socket
 
 PROXY_PORT = 1235
 PROXY_HOST = '0.0.0.0'
 BACKLOG = 10
 DATA_SIZE = 1024
+MAX_WORKERS = 5
 
 
 class TCPClient(object):
@@ -41,6 +42,9 @@ class TCPClient(object):
 
         return buffer
 
+def new_handle(t):
+    buffer, conn, addr = t
+    HTTPServer.handle(buffer, conn, addr)
 
 class HTTPServer(object):
     """
@@ -53,7 +57,10 @@ class HTTPServer(object):
         self.hostname = host
         self.port = port
 
-    def handle(self, buffer, conn, addr):
+        self.pool = mp.Pool(processes = MAX_WORKERS)
+
+    @staticmethod
+    def handle(buffer, conn, addr):
         """
             The core logic of the proxy resides here.
             This function reads the data and forwards it to
@@ -70,6 +77,8 @@ class HTTPServer(object):
         proxy_request = buffer.replace(url[:res_start], '')
         response_from_server = TCPClient().connect(host, 80, proxy_request)
         conn.send(response_from_server)
+        conn.close()
+
 
     def serve(self):
         """
@@ -95,8 +104,7 @@ class HTTPServer(object):
                     break
                 buffer += data.decode('ascii')
 
-            self.handle(buffer, conn, addr)
-            conn.close()
+            self.pool.map(new_handle, [(buffer, conn, addr)])
 
 if __name__ == '__main__':
     HTTPServer().serve()
