@@ -1,12 +1,12 @@
 #!/usr/bin/env python3.4
-'''
+"""
     HTTProxy
         - Aaditya M Nair
     A simple HTTP proxy with support for caching
-'''
+"""
 
-import multiprocessing as mp
 import socket
+import multiprocessing as mp
 
 PROXY_PORT = 1235
 PROXY_HOST = '0.0.0.0'
@@ -19,14 +19,13 @@ class TCPClient(object):
     """
         This class is a simple abstraction of a client.
         You provide a url and it fetches you the appropriate response
-        This is also supposed to interact with the cache.
-        TODO Use as cache
     """
 
     def __init__(self):
         self.soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.soc.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
+    # @profile
     def connect(self, host, port=80, data="GET / HTTP/1.0\r\n\r\n"):
         self.soc.connect((host, port))
         self.soc.send(data.encode('ascii'))
@@ -42,9 +41,6 @@ class TCPClient(object):
 
         return buffer
 
-def new_handle(t):
-    buffer, conn, addr = t
-    HTTPServer.handle(buffer, conn, addr)
 
 class HTTPServer(object):
     """
@@ -53,44 +49,28 @@ class HTTPServer(object):
         Both are changable above.
     """
 
-    def __init__(self, host=PROXY_HOST, port=PROXY_PORT):
+    def __init__(self, port, host=PROXY_HOST):
         self.hostname = host
         self.port = port
 
-        self.pool = mp.Pool(processes = MAX_WORKERS)
+        self.pool = mp.Pool(processes=MAX_WORKERS,
+                            initializer=lambda: print('Started thread '+mp.current_process().name))
+        self.cache = mp.Manager().dict()
+        self.lock = mp.Manager().Lock()
+        print("Cache and Lock Initialised\n")
 
-    @staticmethod
-    def handle(buffer, conn, addr):
-        """
-            The core logic of the proxy resides here.
-            This function reads the data and forwards it to
-            the appropriate host.
-        """
-        url = buffer.split('\r\n')[0].split(' ')[1]
-        proto_end = url.find('//')
-        res_start = url.find('/', proto_end+2)
-
-        host = url[:res_start][proto_end+2:]
-        resource = url[res_start:]
-        print("LOG: ", host, " ", resource)  # TODO
-
-        proxy_request = buffer.replace(url[:res_start], '')
-        response_from_server = TCPClient().connect(host, 80, proxy_request)
-        conn.send(response_from_server)
-        conn.close()
-
-
+    # @profile
     def serve(self):
         """
             Create a socket and bind to a given host/port pair.
             Wait for a connection and when you get one, send the entire
             data to the handler.
-            TODO: Add multiprocessing
         """
         soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         soc.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         soc.bind((self.hostname, self.port))
         soc.listen(BACKLOG)
+        print("Binding to %s:%d\n" % (self.hostname, self.port))
 
         while True:
             conn, addr = soc.accept()
@@ -102,9 +82,62 @@ class HTTPServer(object):
                     data = conn.recv(DATA_SIZE)
                 except socket.timeout:
                     break
-                buffer += data.decode('ascii')
+                try:  # HACK to deal with HTTPS requests. Just close the connection !!!
+                    buffer += data.decode('ascii')
+                except UnicodeDecodeError:
+                    conn.close()
+                    print('Dropped an HTTPS request')
+                    break
 
-            self.pool.map(new_handle, [(buffer, conn, addr)])
+            # self.pool.map_async(handle, [(buffer, conn, addr)])
+            self.pool.map_async(handle, [(buffer, conn, addr, self.cache, self.lock)])
+
+
+# @profile
+def handle(t):
+    """
+        The core logic of the proxy resides here.
+        This function reads the data and forwards it to
+        the appropriate host. This function also interacts with the cache.
+
+        This is not in a class because multiprocessing does not want it to.
+        Do not put this in a class as any form of *optimisation*
+    """
+    # buffer, conn, addr = t
+    buffer, conn, addr, cache, lock = t
+
+    url = buffer.split('\r\n')[0].split(' ')[1]
+    proto_end = url.find('//')
+    res_start = url.find('/', proto_end + 2)
+
+    host = url[:res_start][proto_end + 2:]
+    resource = url[res_start:]
+
+    cached_response = cache.get(url, False)
+    if cached_response:
+        conn.send(cached_response)
+        print(len(cached_response), " %s:%d "%(addr[0], addr[1]), ' ', host, ' ', resource, ' CacheHit')
+    else:
+        proxy_request = buffer.replace(url[:res_start], '')
+        response_from_server = TCPClient().connect(host, 80, proxy_request)
+
+        lock.acquire()
+        cache[url] = response_from_server
+        lock.release()
+
+        conn.send(response_from_server)
+
+        print(len(response_from_server), " %s:%d " % (addr[0], addr[1]), ' ', host, ' ', resource, ' CacheMiss')
+
+    conn.close()
+
 
 if __name__ == '__main__':
-    HTTPServer().serve()
+    import sys
+    try:
+        port = int(sys.argv[1])
+    except IndexError, ValueError:
+        port = PROXY_PORT
+
+    HTTPServer(port=port).serve()
+
