@@ -136,7 +136,7 @@ if __name__ == '__main__':
     import sys
     try:
         port = int(sys.argv[1])
-    except IndexError, ValueError:
+    except (IndexError, ValueError):
         port = PROXY_PORT
 
     HTTPServer(port=port).serve()
